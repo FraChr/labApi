@@ -6,6 +6,21 @@ Det er viktig at dette er valgfritt.
 Den manuelle installasjonen og server-oppsettet i den sentrale README-en fungerer fortsatt helt fint for labben,
 og er ofte den enkleste og mest forutsigbare standardløypa i undervisning.
 
+## Uke 5: self-hosted runner på VM-en
+
+Hvis du bruker denne VM-en i uke 5 til CI/CD-opplegget, se også `docs/uke5-ci-cd-pipeline.md`.
+
+Repoet inneholder et hjelpeskript for å installere GitHub Actions runner som service på VM-en:
+
+```bash
+cd /workspace
+sudo RUNNER_URL="https://github.com/<owner>/<repo>" \
+  RUNNER_TOKEN="<runner-registration-token>" \
+  ./infra/vagrant/install-github-runner.sh
+```
+
+Standard labels i skriptet er `self-hosted,linux,x64,dev`, som matcher deploy-jobben i workflowen.
+
 ## Når dette oppsettet gir mening
 
 Bruk denne løypa hvis du vil at studentene skal:

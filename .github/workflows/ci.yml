@@ -1,38 +1,38 @@
-name: CI Pipeline # 1. Navn (vises i GitHub UI)
+name: CI/CD Pipeline
 
-on: # 2. Triggere (når skal den kjøre?)
+on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
     inputs:
-      environment:
-        description: "Deployment environment"
-        required: true
-        default: "staging"
-        type: choice
-        options:
-          - staging
-          - production
       version:
-        description: "Version tag"
+        description: "Existing image tag to deploy manually, for example a previous commit SHA."
         required: true
         type: string
 
-env: # 3. Globale miljøvariabler
+permissions:
+  contents: read
+
+env:
   DOTNET_VERSION: "10.0.x"
   BUILD_CONFIGURATION: "Release"
+  SOLUTION_PATH: "labApi.sln"
+  PROJECT_PATH: "src/LabApi/LabApi.csproj"
+  DOCKERFILE_PATH: "infra/docker/Dockerfile"
+  COMPOSE_FILE: "infra/docker/docker-compose.yml"
   IMAGE_NAME: ghcr.io/${{ github.repository }}
 
-jobs: # 4. Jobber
-  build: #    Jobb-navn (ID)
-    name: Build and Test #    Visningsnavn
-    runs-on: ubuntu-latest #    Operativsystem (runner)
+jobs:
+  build_test:
+    name: Build, Test and Verify Formatting
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
 
-    steps: # 5. Steg (sekvensielle)
-      - name: Checkout code #    Steg-navn
-        uses: actions/checkout@v5 #    Bruk action
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
@@ -40,38 +40,61 @@ jobs: # 4. Jobber
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore dependencies
-        run: dotnet restore #    Kjør shell-kommando
+        run: dotnet restore ${{ env.SOLUTION_PATH }}
 
-      - name: Build
-        run: dotnet build --configuration ${{ env.BUILD_CONFIGURATION }} --no-restore
+      - name: Build solution
+        run: dotnet build ${{ env.SOLUTION_PATH }} --configuration ${{ env.BUILD_CONFIGURATION }} --no-restore
 
-      - name: Test
-        run: dotnet test --no-build
+      - name: Run tests when test projects exist
+        shell: bash
+        run: |
+          mapfile -t test_projects < <(find . -path './src/*' -prune -o -name '*Tests.csproj' -print)
 
-  test:
-    name: Run Tests
+          if [[ "${#test_projects[@]}" -eq 0 ]]; then
+            echo "No test projects found. Skipping dotnet test for now."
+            exit 0
+          fi
+
+          dotnet test ${{ env.SOLUTION_PATH }} --configuration ${{ env.BUILD_CONFIGURATION }} --no-build
+
+      - name: Verify formatting
+        run: dotnet format ${{ env.SOLUTION_PATH }} --verify-no-changes
+
+  resolve_deploy_target:
+    name: Resolve Image Tag
     runs-on: ubuntu-latest
-    needs: build              # Venter på build-jobben
-    steps:
-      - uses: actions/checkout@v5
-      - run: dotnet test
+    outputs:
+      image_name: ${{ steps.resolve.outputs.image_name }}
+      image_tag: ${{ steps.resolve.outputs.image_tag }}
+      image_ref: ${{ steps.resolve.outputs.image_ref }}
 
-  lint:
-    name: Code Analysis
-    runs-on: ubuntu-latest
-    needs: build              # Venter på build-jobben
     steps:
-      - uses: actions/checkout@v5
-      - run: dotnet format
+      - name: Resolve deploy tag
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          image_name="ghcr.io/${GITHUB_REPOSITORY,,}"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_VERSION}" ]]; then
+            image_tag="${INPUT_VERSION}"
+          else
+            image_tag="${GITHUB_SHA::7}"
+          fi
+
+          echo "image_name=${image_name}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${image_tag}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${image_name}:${image_tag}" >> "$GITHUB_OUTPUT"
 
   docker:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build_test, resolve_deploy_target]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -90,18 +113,96 @@ jobs: # 4. Jobber
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ${{ needs.resolve_deploy_target.outputs.image_name }}
           tags: |
-            type=sha,prefix=,suffix=,format=short
+            type=raw,value=${{ needs.resolve_deploy_target.outputs.image_tag }}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: infra/docker/Dockerfile
+          file: ${{ env.DOCKERFILE_PATH }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max 
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy To Dev VM
+    runs-on: [self-hosted, linux, x64, dev]
+    needs: [build_test, resolve_deploy_target, docker]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (needs.build_test.result == 'success' || needs.build_test.result == 'skipped') &&
+      (needs.docker.result == 'success' || needs.docker.result == 'skipped')
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: true
+    environment:
+      name: development
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Validate deployment secrets
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+        run: |
+          missing=0
+
+          for secret_name in GHCR_USERNAME GHCR_TOKEN POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD; do
+            if [[ -z "${!secret_name}" ]]; then
+              echo "${secret_name} must be configured for deployment." >&2
+              missing=1
+            fi
+          done
+
+          if [[ "${missing}" -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Log in to GHCR on the runner host
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GHCR_USERNAME}" --password-stdin
+
+      - name: Pull and restart the stack
+        env:
+          LABAPI_IMAGE: ${{ needs.resolve_deploy_target.outputs.image_ref }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+        run: |
+          docker compose -f "${COMPOSE_FILE}" pull api
+          docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans db api
+
+      - name: Verify application health
+        env:
+          APP_HEALTH_URL: ${{ vars.APP_HEALTH_URL }}
+        run: |
+          health_url="${APP_HEALTH_URL:-http://localhost:8080/health}"
+
+          for attempt in {1..20}; do
+            if curl --fail --silent --show-error "${health_url}"; then
+              exit 0
+            fi
+
+            sleep 5
+          done
+
+          docker compose -f "${COMPOSE_FILE}" ps
+          docker compose -f "${COMPOSE_FILE}" logs --tail=100 api
+          exit 1

@@ -5,9 +5,17 @@ Dette er den ferdige eksempelappen til Uke 3-labben om **ASP.NET Core på Linux,
 ## Repo-kontekst
 
 Dette prosjektet er en del av backend-kurset.
-Kursets hovedrepo er: https://github.com/GetAcademy/Backend2026.1
+Kursets hovedrepo er: <https://github.com/GetAcademy/Backend2026.1>
 
 Merk at parent-mappen over denne (`GET`) ligger i et annet repo. Denne mappen (`labApi`) er derfor publisert som et eget, separat repository for labben.
+
+## Uke 5: CI/CD-løype
+
+For uke 5 ligger det nå en egen guide for full pipeline med GitHub Actions, GHCR, self-hosted runner og Docker Compose:
+
+- `docs/uke5-ci-cd-pipeline.md`
+
+Denne bygger videre på appen i dette repoet og passer godt når studentene skal jobbe i egne forks.
 
 ## Struktur
 
