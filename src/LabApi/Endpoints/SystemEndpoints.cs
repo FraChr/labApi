@@ -4,18 +4,27 @@ public static class SystemEndpoints
 {
     public static IEndpointRouteBuilder MapSystemEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapGet("/", () => Results.Ok(new
-        {
-            app = "LabApi",
-            message = "Lab API is running",
-            endpoints = new[] { "/health", "/api/products" }
-        }));
 
-        endpoints.MapGet("/health", () => Results.Ok(new
+        endpoints.MapGet("/", (ILogger<Program> logger) =>
         {
-            status = "ok",
-            time = DateTimeOffset.UtcNow
-        }));
+            logger.LogInformation("Root endpoint called");
+            return Results.Ok(new
+            {
+                app = "LabApi",
+                message = "Lab API is running",
+                endpoints = new[] { "/health", "/api/products" }
+            });
+        });
+
+        endpoints.MapGet("/health", (ILogger<Program> logger) =>
+        {
+            logger.LogInformation("Health check at {Time}", DateTimeOffset.UtcNow);
+            return Results.Ok(new
+            {
+                status = "OK",
+                time = DateTimeOffset.UtcNow
+            });
+        });
 
         return endpoints;
     }
