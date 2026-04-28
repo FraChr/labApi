@@ -2,7 +2,10 @@ using Serilog;
 using Serilog.Events;
 using LabApi.Configuration;
 using LabApi.Endpoints;
+using LabApi.Middleware;
+using Microsoft.AspNetCore.Mvc.ApplicationParts;
 using Microsoft.EntityFrameworkCore;
+using Prometheus;
 using Serilog.Core;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -26,6 +29,10 @@ builder.Host.UseSerilog();
 
 var app = builder.Build();
 
+app.UseHttpMetrics();
+app.MapMetrics();
+
+app.UseMiddleware<CorrelationIdMiddleware>();
 app.ConfigureHttpPipeline();
 app.MapSystemEndpoints();
 app.MapControllers();

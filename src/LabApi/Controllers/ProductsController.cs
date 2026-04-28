@@ -3,13 +3,16 @@ using LabApi.Contracts.Products;
 using LabApi.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Prometheus;
 
 namespace LabApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public sealed class ProductsController : ControllerBase
+public class ProductsController : ControllerBase
 {
+    private static readonly Counter _productCounter = Metrics
+        .CreateCounter("product_operations_total", "Total product operations", new[] { "operation", "status" });
     private readonly AppDbContext _context;
     private readonly ILogger<ProductsController> _logger;
 
@@ -80,6 +83,7 @@ public sealed class ProductsController : ControllerBase
         }
         catch(DbUpdateException ex)
         {
+            _productCounter.WithLabels("create", "error").Inc();
             _logger.LogError(ex, "Database error creating product {ProductName}", product.Name);
             return Problem("A database error occurred", statusCode: 500);
         }
